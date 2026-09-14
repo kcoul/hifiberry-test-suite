@@ -4,6 +4,8 @@ namespace AudioApp
 {
 MainComponent::MainComponent() : state (Stopped)
 {
+    backgroundThread.startThread();
+
     addAndMakeVisible (&openButton);
     openButton.setButtonText ("Open...");
     openButton.onClick = [this] { openButtonClicked(); };
@@ -32,12 +34,13 @@ MainComponent::MainComponent() : state (Stopped)
 
     setAudioChannels(2,2);
     addAndMakeVisible(selector);
-    setSize(600, 400);
+    setSize(600, 500);
     startTimer (20);
 }
 
 MainComponent::~MainComponent() 
 {
+    stopRecording();
     shutdownAudio();
 }
 
@@ -60,6 +63,7 @@ void MainComponent::resized()
 void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
 {
     transportSource.prepareToPlay (samplesPerBlockExpected, sampleRate);
+    mSampleRate = sampleRate;
 }
 
 void MainComponent::releaseResources()
@@ -73,6 +77,13 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     {
         bufferToFill.clearActiveBufferRegion();
         return;
+    }
+
+    const juce::ScopedLock sl (writerLock);
+
+    if (activeWriter.load() != nullptr)
+    {
+        activeWriter.load()->write (bufferToFill.buffer->getArrayOfReadPointers(), bufferToFill.numSamples);
     }
 
     transportSource.getNextAudioBlock (bufferToFill);
@@ -155,11 +166,11 @@ void MainComponent::openButtonClicked()
 
     chooser->launchAsync (chooserFlags, [this] (const juce::FileChooser& fc)
     {
-        auto file = fc.getResult();
+        inputFile = fc.getResult();
 
-        if (file != juce::File{})
+        if (inputFile != juce::File{})
         {
-            auto* reader = formatManager.createReaderFor (file);
+            auto* reader = formatManager.createReaderFor (inputFile);
 
             if (reader != nullptr)
             {
@@ -176,16 +187,67 @@ void MainComponent::playButtonClicked()
 {
     updateLoopState (loopingToggle.getToggleState());
     changeState (Starting);
+    startRecording();
 }
 
 void MainComponent::stopButtonClicked()
 {
     changeState (Stopping);
+    stopRecording();
 }
 
 void MainComponent::loopButtonChanged()
 {
     updateLoopState (loopingToggle.getToggleState());
+}
+
+void MainComponent::startRecording()
+{
+    stopRecording();
+
+    if (mSampleRate > 0)
+    {
+        outputFile = inputFile.getParentDirectory().getChildFile(inputFile.getFileNameWithoutExtension() + "_RTL.wav");
+        if (outputFile.existsAsFile()) {
+            outputFile.deleteFile();
+        }
+
+        if (std::unique_ptr<juce::OutputStream> fileStream { outputFile.createOutputStream() })
+        {
+            juce::WavAudioFormat wavFormat;
+
+            using Opts = juce::AudioFormatWriterOptions;
+
+            if (auto writer = wavFormat.createWriterFor (fileStream, Opts{}.withSampleRate (mSampleRate)
+                                                                            .withNumChannels (2)
+                                                                            .withBitsPerSample (16)))
+            {
+                auto* writerPtr = writer.get();
+
+                threadedWriter.reset (new juce::AudioFormatWriter::ThreadedWriter (writer.release(), backgroundThread, 32768));
+
+                nextSampleNum = 0;
+
+                const juce::ScopedLock sl (writerLock);
+                activeWriter = threadedWriter.get();
+            }
+        }
+    }
+}
+
+void MainComponent::stopRecording()
+{
+    {
+        const juce::ScopedLock sl (writerLock);
+        activeWriter = nullptr;
+    }
+
+    threadedWriter.reset();
+}
+
+bool MainComponent::isRecording() const
+{
+    return activeWriter.load() != nullptr;
 }
 
 } // namespace GuiApp

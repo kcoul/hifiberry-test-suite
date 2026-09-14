@@ -12,7 +12,7 @@ class MainComponent : public juce::AudioAppComponent,
 public:
     MainComponent();
     ~MainComponent();
-    
+
     void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override;
     void releaseResources() override;
     void getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill) override;
@@ -46,11 +46,25 @@ private:
     juce::Label currentPositionLabel;
 
     std::unique_ptr<juce::FileChooser> chooser;
+    juce::File inputFile;
+    juce::File outputFile;
 
     juce::AudioFormatManager formatManager;
     std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
     juce::AudioTransportSource transportSource;
     TransportState state;
+
+    juce::TimeSliceThread backgroundThread { "Audio Recorder Thread" };
+    std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> threadedWriter;
+    double mSampleRate = 0.0;
+    int64_t nextSampleNum = 0;
+
+    juce::CriticalSection writerLock;
+    std::atomic<juce::AudioFormatWriter::ThreadedWriter*> activeWriter { nullptr };
+
+    void startRecording();
+    void stopRecording();
+    bool isRecording() const;
 
     juce::AudioDeviceSelectorComponent selector {
         deviceManager, 2, 2, 2, 2, false, false, true, false};
