@@ -5,11 +5,14 @@
 
 namespace AudioApp
 {
-class MainComponent : public juce::AudioAppComponent
+class MainComponent : public juce::AudioAppComponent,
+                      public juce::ChangeListener,
+                      public juce::Timer
 {
 public:
     MainComponent();
-
+    ~MainComponent();
+    
     void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override;
     void releaseResources() override;
     void getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill) override;
@@ -17,7 +20,38 @@ public:
     void paint(juce::Graphics&) override;
     void resized() override;
 
+    void changeListenerCallback (juce::ChangeBroadcaster* source) override;
+    void timerCallback() override;
+    void updateLoopState (bool shouldLoop);
+
 private:
+    enum TransportState
+    {
+        Stopped,
+        Starting,
+        Playing,
+        Stopping
+    };
+
+    void changeState (TransportState newState);
+    void openButtonClicked();
+    void playButtonClicked();
+    void stopButtonClicked();
+    void loopButtonChanged();
+
+    juce::TextButton openButton;
+    juce::TextButton playButton;
+    juce::TextButton stopButton;
+    juce::ToggleButton loopingToggle;
+    juce::Label currentPositionLabel;
+
+    std::unique_ptr<juce::FileChooser> chooser;
+
+    juce::AudioFormatManager formatManager;
+    std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
+    juce::AudioTransportSource transportSource;
+    TransportState state;
+
     juce::AudioDeviceSelectorComponent selector {
         deviceManager, 2, 2, 2, 2, false, false, true, false};
 
