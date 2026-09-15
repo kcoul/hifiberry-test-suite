@@ -3,7 +3,6 @@ project(HiFiBerryTestSuiteGUI VERSION 0.1)
 set (TargetName ${PROJECT_NAME})
 
 juce_add_gui_app(${TargetName} PRODUCT_NAME "HiFiBerry Test Suite")
-juce_generate_juce_header(${TargetName})
 
 target_sources(${TargetName} PRIVATE
         Main.cpp
@@ -17,6 +16,7 @@ target_compile_definitions(${TargetName} PRIVATE
         JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:${TargetName},JUCE_VERSION>")
 
 target_link_libraries(${TargetName} PRIVATE
+        HiFiBerryTestSuiteCommon
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags

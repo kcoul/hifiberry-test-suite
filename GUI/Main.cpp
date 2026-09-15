@@ -22,7 +22,7 @@ private:
     std::unique_ptr<MainWindow> mainWindow;
 };
 
-} // namespace GuiApp
+} // namespace AudioApp
 
 // This macro generates the main() routine that launches the app.
 START_JUCE_APPLICATION(AudioApp::GuiAppTemplateApplication)

@@ -2,252 +2,221 @@
 
 namespace AudioApp
 {
-MainComponent::MainComponent() : state (Stopped)
+MainComponent::MainComponent()
 {
-    backgroundThread.startThread();
-
     addAndMakeVisible (&openButton);
-    openButton.setButtonText ("Open...");
     openButton.onClick = [this] { openButtonClicked(); };
 
     addAndMakeVisible (&playButton);
-    playButton.setButtonText ("Play");
     playButton.onClick = [this] { playButtonClicked(); };
     playButton.setColour (juce::TextButton::buttonColourId, juce::Colours::green);
-    playButton.setEnabled (false);
 
     addAndMakeVisible (&stopButton);
-    stopButton.setButtonText ("Stop");
     stopButton.onClick = [this] { stopButtonClicked(); };
     stopButton.setColour (juce::TextButton::buttonColourId, juce::Colours::red);
-    stopButton.setEnabled (false);
 
-    addAndMakeVisible (&loopingToggle);
-    loopingToggle.setButtonText ("Loop");
-    loopingToggle.onClick = [this] { loopButtonChanged(); };
+    addAndMakeVisible (&coldStartToggle);
 
-    addAndMakeVisible (&currentPositionLabel);
-    currentPositionLabel.setText ("Stopped", juce::dontSendNotification);
+    addAndMakeVisible (&statusLabel);
+    statusLabel.setText ("Open a WAV stimulus to begin", juce::dontSendNotification);
 
-    formatManager.registerBasicFormats();
-    transportSource.addChangeListener (this);
+    addAndMakeVisible (&results);
+    results.setMultiLine (true);
+    results.setReadOnly (true);
+    results.setScrollbarsShown (true);
+    results.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 13.0f, juce::Font::plain));
 
-    setAudioChannels(2,2);
-    addAndMakeVisible(selector);
-    setSize(600, 500);
+    addAndMakeVisible (selector);
+
+    const auto error = RoundTrip::openDevice (deviceManager, {});
+    deviceManager.addAudioCallback (&engine);
+
+    if (error.isNotEmpty())
+        showMessage ("Couldn't open an audio device: " + error);
+
+    setState (State::idle);
+    setSize (700, 800);
     startTimer (20);
 }
 
-MainComponent::~MainComponent() 
+MainComponent::~MainComponent()
 {
-    stopRecording();
-    shutdownAudio();
+    stopTimer();
+    deviceManager.removeAudioCallback (&engine);
 }
 
-void MainComponent::paint(juce::Graphics& g)
+void MainComponent::paint (juce::Graphics& g)
 {
-    g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
+    g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
 }
 
 void MainComponent::resized()
 {
-    openButton          .setBounds (10, 10,  getWidth() - 20, 20);
-    playButton          .setBounds (10, 40,  getWidth() - 20, 20);
-    stopButton          .setBounds (10, 70,  getWidth() - 20, 20);
-    loopingToggle       .setBounds (10, 100, getWidth() - 20, 20);
-    currentPositionLabel.setBounds (10, 130, getWidth() - 20, 20);
+    auto area = getLocalBounds().reduced (10);
 
-    selector.setBounds(10, 160, getWidth() - 20, 230);
-}
-
-void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
-{
-    transportSource.prepareToPlay (samplesPerBlockExpected, sampleRate);
-    mSampleRate = sampleRate;
-}
-
-void MainComponent::releaseResources()
-{
-    transportSource.releaseResources();
-}
-
-void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
-{
-    if (readerSource.get() == nullptr)
+    const auto row = [&area] (int height)
     {
-        bufferToFill.clearActiveBufferRegion();
+        auto r = area.removeFromTop (height);
+        area.removeFromTop (8);
+        return r;
+    };
+
+    openButton     .setBounds (row (20));
+    playButton     .setBounds (row (20));
+    stopButton     .setBounds (row (20));
+    coldStartToggle.setBounds (row (20));
+    statusLabel    .setBounds (row (20));
+    selector       .setBounds (row (230));
+    results        .setBounds (area);
+}
+
+void MainComponent::timerCallback()
+{
+    if (state != State::recording)
         return;
-    }
 
-    const juce::ScopedLock sl (writerLock);
-
-    if (activeWriter.load() != nullptr)
+    if (engine.isFinished())
     {
-        activeWriter.load()->write (bufferToFill.buffer->getArrayOfReadPointers(), bufferToFill.numSamples);
+        startAnalysis();
     }
-
-    transportSource.getNextAudioBlock (bufferToFill);
-}
-
-void MainComponent::changeListenerCallback (juce::ChangeBroadcaster* source) 
-{
-    if (source == &transportSource)
+    else if (! engine.isBusy())
     {
-        if (transportSource.isPlaying())
-            changeState (Playing);
-        else
-            changeState (Stopped);
-    }
-}
-
-void MainComponent::timerCallback() 
-{
-    if (transportSource.isPlaying())
-    {
-        juce::RelativeTime position (transportSource.getCurrentPosition());
-
-        auto minutes = ((int) position.inMinutes()) % 60;
-        auto seconds = ((int) position.inSeconds()) % 60;
-        auto millis  = ((int) position.inMilliseconds()) % 1000;
-
-        auto positionString = juce::String::formatted ("%02d:%02d:%03d", minutes, seconds, millis);
-
-        currentPositionLabel.setText (positionString, juce::dontSendNotification);
+        showMessage ("Take aborted: " + engine.getLastError());
+        setState (State::idle);
     }
     else
     {
-        currentPositionLabel.setText ("Stopped", juce::dontSendNotification);
+        statusLabel.setText ("Recording... " + juce::String (engine.getProgress() * 100.0, 0) + "%",
+                             juce::dontSendNotification);
     }
 }
 
-void MainComponent::updateLoopState (bool shouldLoop)
+void MainComponent::setState (State newState)
 {
-    if (readerSource.get() != nullptr)
-        readerSource->setLooping (shouldLoop);
+    state = newState;
+
+    const auto idle = state == State::idle;
+    openButton.setEnabled (idle);
+    playButton.setEnabled (idle && stimulus != nullptr);
+    stopButton.setEnabled (state == State::recording);
+    coldStartToggle.setEnabled (idle);
+    selector.setEnabled (idle);
 }
 
-void MainComponent::changeState (TransportState newState)
+void MainComponent::showMessage (const juce::String& message)
 {
-    if (state != newState)
-    {
-        state = newState;
-
-        switch (state)
-        {
-            case Stopped:
-                stopButton.setEnabled (false);
-                playButton.setEnabled (true);
-                transportSource.setPosition (0.0);
-                break;
-
-            case Starting:
-                playButton.setEnabled (false);
-                transportSource.start();
-                break;
-
-            case Playing:
-                stopButton.setEnabled (true);
-                break;
-
-            case Stopping:
-                transportSource.stop();
-                break;
-        }
-    }
+    statusLabel.setText (message, juce::dontSendNotification);
+    results.setText (message, false);
 }
 
 void MainComponent::openButtonClicked()
 {
-    chooser = std::make_unique<juce::FileChooser> ("Select a Wave file to play...",
-                                                    juce::File{},
-                                                    "*.wav");
+    chooser = std::make_unique<juce::FileChooser> ("Select a WAV stimulus to play...",
+                                                   juce::File{},
+                                                   "*.wav");
     auto chooserFlags = juce::FileBrowserComponent::openMode
                         | juce::FileBrowserComponent::canSelectFiles;
 
     chooser->launchAsync (chooserFlags, [this] (const juce::FileChooser& fc)
     {
-        inputFile = fc.getResult();
+        const auto file = fc.getResult();
 
-        if (inputFile != juce::File{})
+        if (file == juce::File{})
+            return;
+
+        auto clip = std::make_shared<RoundTrip::AudioClip>();
+
+        if (const auto result = RoundTrip::loadClip (file, *clip); result.failed())
         {
-            auto* reader = formatManager.createReaderFor (inputFile);
-
-            if (reader != nullptr)
-            {
-                auto newSource = std::make_unique<juce::AudioFormatReaderSource> (reader, true);
-                transportSource.setSource (newSource.get(), 0, nullptr, reader->sampleRate);
-                playButton.setEnabled (true);
-                readerSource.reset (newSource.release());
-            }
+            showMessage (result.getErrorMessage());
+            return;
         }
+
+        stimulus = clip;
+        auto message = file.getFileName() + " loaded";
+
+        auto setup = deviceManager.getAudioDeviceSetup();
+
+        if (! juce::approximatelyEqual (setup.sampleRate, clip->sampleRate))
+        {
+            setup.sampleRate = clip->sampleRate;
+
+            if (const auto error = deviceManager.setAudioDeviceSetup (setup, true); error.isNotEmpty())
+                message << "; couldn't switch the device to " << clip->sampleRate << " Hz: " << error;
+            else
+                message << "; device switched to " << clip->sampleRate << " Hz";
+        }
+
+        showMessage (message);
+        setState (State::idle);
     });
 }
 
 void MainComponent::playButtonClicked()
 {
-    updateLoopState (loopingToggle.getToggleState());
-    changeState (Starting);
-    startRecording();
+    if (stimulus == nullptr)
+        return;
+
+    const auto cold = coldStartToggle.getToggleState();
+    const auto tail = (int) (stimulus->sampleRate * RoundTrip::defaultTailMs / 1000.0);
+
+    if (cold)
+        deviceManager.closeAudioDevice();
+
+    const auto result = engine.arm (*stimulus, tail, cold);
+
+    if (cold)
+        deviceManager.restartLastAudioDevice();
+
+    if (result.failed())
+    {
+        showMessage (result.getErrorMessage());
+        return;
+    }
+
+    results.clear();
+    setState (State::recording);
 }
 
 void MainComponent::stopButtonClicked()
 {
-    changeState (Stopping);
-    stopRecording();
+    engine.cancel();
+    showMessage ("Stopped");
+    setState (State::idle);
 }
 
-void MainComponent::loopButtonChanged()
+void MainComponent::startAnalysis()
 {
-    updateLoopState (loopingToggle.getToggleState());
-}
+    setState (State::analysing);
+    statusLabel.setText ("Analysing...", juce::dontSendNotification);
 
-void MainComponent::startRecording()
-{
-    stopRecording();
+    auto take = std::make_shared<RoundTrip::Take> (engine.takeResult());
+    const auto maxLag = (juce::int64) (take->capture.getNumSamples() - stimulus->getNumSamples());
 
-    if (mSampleRate > 0)
+    analysisPool.addJob ([safeThis = SafePointer<MainComponent> (this), clip = stimulus, take, maxLag]
     {
-        outputFile = inputFile.getParentDirectory().getChildFile(inputFile.getFileNameWithoutExtension() + "_RTL.wav");
-        if (outputFile.existsAsFile()) {
-            outputFile.deleteFile();
-        }
+        auto outcome = std::make_shared<RoundTrip::Outcome> (RoundTrip::processTake (*clip, *take, maxLag));
 
-        if (std::unique_ptr<juce::OutputStream> fileStream { outputFile.createOutputStream() })
+        juce::MessageManager::callAsync ([safeThis, outcome]
         {
-            juce::WavAudioFormat wavFormat;
+            auto* self = safeThis.getComponent();
 
-            using Opts = juce::AudioFormatWriterOptions;
+            if (self == nullptr)
+                return;
 
-            if (auto writer = wavFormat.createWriterFor (fileStream, Opts{}.withSampleRate (mSampleRate)
-                                                                            .withNumChannels (2)
-                                                                            .withBitsPerSample (16)))
-            {
-                auto* writerPtr = writer.get();
+            auto text = outcome->summary;
 
-                threadedWriter.reset (new juce::AudioFormatWriter::ThreadedWriter (writer.release(), backgroundThread, 32768));
+            if (outcome->writeResult.failed())
+                text << "Error:     " << outcome->writeResult.getErrorMessage();
+            else
+                text << "Wrote:     " << outcome->recordingFile.getFullPathName() << juce::newLine
+                     << "           " << outcome->reportFile.getFullPathName();
 
-                nextSampleNum = 0;
-
-                const juce::ScopedLock sl (writerLock);
-                activeWriter = threadedWriter.get();
-            }
-        }
-    }
+            self->results.setText (text, false);
+            self->statusLabel.setText (outcome->analysis.getVerdict(), juce::dontSendNotification);
+            self->setState (State::idle);
+        });
+    });
 }
 
-void MainComponent::stopRecording()
-{
-    {
-        const juce::ScopedLock sl (writerLock);
-        activeWriter = nullptr;
-    }
-
-    threadedWriter.reset();
-}
-
-bool MainComponent::isRecording() const
-{
-    return activeWriter.load() != nullptr;
-}
-
-} // namespace GuiApp
+} // namespace AudioApp

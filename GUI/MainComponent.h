@@ -3,71 +3,57 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include "Devices.h"
+#include "Report.h"
+
 namespace AudioApp
 {
-class MainComponent : public juce::AudioAppComponent,
-                      public juce::ChangeListener,
-                      public juce::Timer
+class MainComponent : public juce::Component,
+                      private juce::Timer
 {
 public:
     MainComponent();
-    ~MainComponent();
+    ~MainComponent() override;
 
-    void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override;
-    void releaseResources() override;
-    void getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill) override;
-
-    void paint(juce::Graphics&) override;
+    void paint (juce::Graphics&) override;
     void resized() override;
 
-    void changeListenerCallback (juce::ChangeBroadcaster* source) override;
-    void timerCallback() override;
-    void updateLoopState (bool shouldLoop);
-
 private:
-    enum TransportState
+    enum class State
     {
-        Stopped,
-        Starting,
-        Playing,
-        Stopping
+        idle,
+        recording,
+        analysing
     };
 
-    void changeState (TransportState newState);
+    void timerCallback() override;
     void openButtonClicked();
     void playButtonClicked();
     void stopButtonClicked();
-    void loopButtonChanged();
+    void setState (State newState);
+    void startAnalysis();
+    void showMessage (const juce::String& message);
 
-    juce::TextButton openButton;
-    juce::TextButton playButton;
-    juce::TextButton stopButton;
-    juce::ToggleButton loopingToggle;
-    juce::Label currentPositionLabel;
+    // Declared before the device manager so it outlives the device that calls into it.
+    RoundTrip::Engine engine;
+    juce::AudioDeviceManager deviceManager;
 
-    std::unique_ptr<juce::FileChooser> chooser;
-    juce::File inputFile;
-    juce::File outputFile;
-
-    juce::AudioFormatManager formatManager;
-    std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
-    juce::AudioTransportSource transportSource;
-    TransportState state;
-
-    juce::TimeSliceThread backgroundThread { "Audio Recorder Thread" };
-    std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> threadedWriter;
-    double mSampleRate = 0.0;
-    int64_t nextSampleNum = 0;
-
-    juce::CriticalSection writerLock;
-    std::atomic<juce::AudioFormatWriter::ThreadedWriter*> activeWriter { nullptr };
-
-    void startRecording();
-    void stopRecording();
-    bool isRecording() const;
+    juce::TextButton openButton { "Open..." };
+    juce::TextButton playButton { "Play" };
+    juce::TextButton stopButton { "Stop" };
+    juce::ToggleButton coldStartToggle { "Restart the device on Play (includes start-up in the timing)" };
+    juce::Label statusLabel;
+    juce::TextEditor results;
 
     juce::AudioDeviceSelectorComponent selector {
         deviceManager, 2, 2, 2, 2, false, false, true, false};
+
+    std::unique_ptr<juce::FileChooser> chooser;
+    std::shared_ptr<const RoundTrip::AudioClip> stimulus;
+    State state = State::idle;
+
+    // Last, so a running analysis finishes before anything it posts back to is destroyed.
+    juce::ThreadPool analysisPool { juce::ThreadPoolOptions{}.withNumberOfThreads (1) };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
